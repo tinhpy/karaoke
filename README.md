@@ -1,2 +1,1 @@
-# karaoke
- 
+# karaoke-management

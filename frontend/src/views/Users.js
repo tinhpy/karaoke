@@ -97,12 +97,12 @@ const headCells = [
     disablePadding: true,
     label: "Wage",
   },
-  {
-    id: "monthly_salary",
-    numeric: false,
-    disablePadding: true,
-    label: "Salary",
-  },
+  // {
+  //   id: "monthly_salary",
+  //   numeric: false,
+  //   disablePadding: true,
+  //   label: "Month Salary",
+  // },
   {
     id: "createAt",
     numeric: false,
@@ -463,6 +463,10 @@ const sortOption = [
   { title: "Salary Desc", value: "-monthly_salary" },
 ];
 
+function numberWithCommas(x) {
+  return x.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
 export default function Users(props) {
   const classes = useStyles();
   const [order, setOrder] = React.useState("asc");
@@ -712,15 +716,15 @@ export default function Users(props) {
                                   scope="row"
                                   padding="none"
                                 >
-                                  {row.salary}
+                                  {numberWithCommas(Math.round(row.salary))}
                                 </TableCell>
-                                <TableCell
+                                {/* <TableCell
                                   className={classes.tableCell}
                                   scope="row"
                                   padding="none"
                                 >
-                                  {row.monthly_salary}
-                                </TableCell>
+                                  {numberWithCommas(row.monthly_salary)}
+                                </TableCell> */}
                               </React.Fragment>
                             ) : null}
                             <TableCell

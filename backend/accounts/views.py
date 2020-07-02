@@ -10,12 +10,16 @@ from django.forms.models import model_to_dict
 from django.core.paginator import Paginator
 from .pagination import StandardResultsSetPagination, PaginationHandlerMixin, LargeResultsSetPagination
 from django_filters.rest_framework import DjangoFilterBackend
+from django.core.exceptions import ObjectDoesNotExist
 
 from rest_framework import status
 """ Background """
 from background_task import background
 from datetime import date, datetime
 import datetime as full_datetime
+import json
+from django.core import serializers
+from django.forms.models import model_to_dict
 
 
 @background(schedule=1)
@@ -59,7 +63,7 @@ class ListCreateUserViewSet(views.APIView, PaginationHandlerMixin):
         sort_by = request.query_params.get('ordering')
 
         my_model_fields = [field.name for field in User._meta.get_fields()]
-        print(my_model_fields)
+
         if sort_by and sort_by[1:] in my_model_fields or sort_by in my_model_fields:
             instance = instance.order_by(sort_by)
 
@@ -78,9 +82,6 @@ class ListCreateUserViewSet(views.APIView, PaginationHandlerMixin):
         return Response(serializer.data)
 
     def post(self, request, *args, **kwargs):
-
-        print("----------------------------------------------")
-        print(request.user)
 
         serializer_class = RegisterSerializer
         serializer = RegisterSerializer(data=request.data)
@@ -134,24 +135,23 @@ class RetriveUserViewSet(views.APIView, PaginationHandlerMixin):
 
         instance.save()
 
-        # Check duplicate schedule
-        for schedule in request.data["schedules"]:
-            count = 0
-            for schedule_2 in request.data["schedules"]:
-                if schedule['workingTime'] == schedule_2['workingTime'] and schedule['weekDay'] == schedule_2['weekDay']:
-                    count = count + 1
-                if count == 2:
-                    return Response({'Schedule': [{"Schedule already exits"}]}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        # Update Salary
+        start = datetime.today()
+        startWeek = start - full_datetime.timedelta(start.weekday())
 
-        # Delete old schedule
-        Schedule.objects.filter(staff=instance).delete()
+        try:
+            weeklySchedule = WeeklySchedule.objects.get(start=startWeek)
+        except ObjectDoesNotExist:
+            weeklySchedule = WeeklySchedule.objects.create(start=startWeek)
 
-        # Update schedule for user
-        for schedule in request.data["schedules"]:
-            schedule["staff"] = instance.id
-            schedule_serializer = ScheduleSerializer(data=schedule)
-            schedule_serializer.is_valid(raise_exception=True)
-            new_schedule = schedule_serializer.save()
+        try:
+            weeklySalary = WeeklySalary.objects.get(
+                weeklySchedule=weeklySchedule, staff=instance)
+            weeklySalary.weeklySalary = weeklySalary.get_weekly_salary()
+            weeklySalary.save()
+
+        except ObjectDoesNotExist:
+            pass
 
         return Response(UserSerializer(instance=instance).data)
 
@@ -192,16 +192,12 @@ class ScheduleViewSet(viewsets.ModelViewSet):
 
         return [permission() for permission in permission_classes]
 
-    # Explicitly specify which fields the API may be ordered against
-
     search_fields = ['weekDay', 'workingTime']
     filterset_fields = ['weekDay', 'workingTime']
-    # This will be used as the default ordering
-    # This will be used as the default ordering
+
     ordering = ['-created_at']
 
     def create(self, request):
-        print(request.data)
         user = get_object_or_404(User, pk=request.data['staff'])
         weeklySchedule = get_object_or_404(
             WeeklySchedule, pk=request.data['weeklySchedule'])
@@ -212,9 +208,7 @@ class ScheduleViewSet(viewsets.ModelViewSet):
                 return Response({'Schedule': [{"Schedule already exits"}]}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         serializer = self.get_serializer(data=request.data)
-
         serializer.is_valid(raise_exception=True)
-
         schedule = serializer.save()
 
         weeklySalary = WeeklySalary.objects.filter(
@@ -224,20 +218,68 @@ class ScheduleViewSet(viewsets.ModelViewSet):
             salary = WeeklySalary.objects.create(
                 staff=user, weeklySchedule=weeklySchedule)
 
-        return Response(serializer.data)
+            salary.weeklySalary = salary.get_weekly_salary()
+
+            salary.save()
+
+        else:
+            salary = weeklySalary.first()
+            salary.weeklySalary = salary.get_weekly_salary()
+
+            salary.save()
+
+        weeklySalarySerializer = WeeklySalarySerializer(salary)
+        context = {}
+        context['schedule'] = serializer.data
+        context['salary'] = weeklySalarySerializer.data
+
+        return Response(context)
 
     def destroy(self, request, pk=None):
-        print("------------------")
-        print("-------------------------------------------------")
-        print(self.kwargs)
+
         schedule = get_object_or_404(Schedule, pk=self.kwargs.get('pk'))
+        weeklySchedule = get_object_or_404(
+            WeeklySchedule, pk=schedule.weeklySchedule.id)
+        user = get_object_or_404(User, pk=schedule.staff.id)
+
+        weeklySalary = WeeklySalary.objects.filter(
+            staff=user, weeklySchedule=weeklySchedule)
+
         schedule.delete()
 
-        return Response({})
+        if weeklySalary.count() == 0:
+            salary = WeeklySalary.objects.create(
+                staff=user, weeklySchedule=weeklySchedule)
+
+            salary.weeklySalary = salary.get_weekly_salary()
+
+            salary.save()
+        else:
+            salary = weeklySalary.first()
+            salary.weeklySalary = salary.get_weekly_salary()
+
+            salary.save()
+
+        weeklySalarySerializer = WeeklySalarySerializer(salary)
+
+        return Response(weeklySalarySerializer.data)
+
 
 class AllScheduleViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Schedule.objects.all()
     serializer_class = ScheduleSerializer
+    pagination_class = LargeResultsSetPagination
+    filter_backends = (DjangoFilterBackend, filters.OrderingFilter)
+
+    # Explicitly specify which fields the API may be ordered against
+
+    # This will be used as the default ordering
+    ordering = ['-created_at']
+
+
+class AllWeekySalaryViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = WeeklySalary.objects.all()
+    serializer_class = WeeklySalarySerializer
     pagination_class = LargeResultsSetPagination
     filter_backends = (DjangoFilterBackend, filters.OrderingFilter)
 
@@ -275,7 +317,6 @@ class WeeklyScheduleViewSet(viewsets.ModelViewSet):
             return WeeklyScheduleSerializer
 
     def create(self, request):
-
         start = datetime.strptime(request.data['start'], '%Y-%m-%d').date()
         print(start)
         startWeek = start - full_datetime.timedelta(start.weekday())
